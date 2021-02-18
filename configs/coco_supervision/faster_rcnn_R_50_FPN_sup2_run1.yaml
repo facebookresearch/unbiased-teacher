@@ -1,0 +1,39 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  META_ARCHITECTURE: "TwoStagePseudoLabGeneralizedRCNN"
+  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 50
+  PROPOSAL_GENERATOR:
+    NAME: "PseudoLabRPN"
+  RPN:
+    POSITIVE_FRACTION: 0.25
+    LOSS: "CrossEntropy"
+  ROI_HEADS:
+    NAME: "StandardROIHeadsPseudoLab"
+    LOSS: "FocalLoss"
+SOLVER:
+  LR_SCHEDULER_NAME: "WarmupMultiStepLR"
+  STEPS: (179990, 179995)
+  MAX_ITER: 180000
+  IMG_PER_BATCH_LABEL: 32
+  IMG_PER_BATCH_UNLABEL: 32
+  BASE_LR: 0.01
+DATALOADER:
+  SUP_PERCENT: 2.0
+  RANDOM_DATA_SEED: 1
+DATASETS:
+  CROSS_DATASET: False
+  TRAIN: ("coco_2017_train",)
+  TEST: ("coco_2017_val",)
+SEMISUPNET:
+  Trainer: "ubteacher"
+  BBOX_THRESHOLD: 0.7
+  TEACHER_UPDATE_ITER: 1
+  BURN_UP_STEP: 2000
+  EMA_KEEP_RATE: 0.9996
+  UNSUP_LOSS_WEIGHT: 4.0
+TEST:
+  EVAL_PERIOD: 1000
+  EVALUATOR: "COCOeval"
