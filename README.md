@@ -119,9 +119,18 @@ python train_net.py \
        SOLVER.IMG_PER_BATCH_LABEL 16 SOLVER.IMG_PER_BATCH_UNLABEL 16 MODEL.WEIGHTS <your weight>.pth
 ```
 
-## Model Zoo
+## Model Weights
 
-Coming soon
+For the following results, we use 16 labeled images + 16 unlabeled images on 8 GPUs (single node).
+
+Faster-RCNN:
+
+|   Model      |   Supervision  |             Batch size              |  AP   |  Model Weights |
+| :----------: | :------------: | :---------------------------------: | :---: |:-----: |
+| R50-FPN      |       1%       | 16 labeled img + 16 unlabeled imgs  | 20.16 | [link](https://drive.google.com/file/d/1NQs5SrQ2-ODEVn_ZdPU_2xv9mxdY6MPq/view?usp=sharing) |
+| R50-FPN      |       2%       | 16 labeled img + 16 unlabeled imgs  | 24.16 | [link](https://drive.google.com/file/d/12q-LB4iDvgXGW50Q-bYOahpalUvO3SIa/view?usp=sharing) |
+| R50-FPN      |       5%       | 16 labeled img + 16 unlabeled imgs  | 27.84 | [link](https://drive.google.com/file/d/1IJQeRP9wHPU0J27YTea-y3lIW96bMAUu/view?usp=sharing) |
+| R50-FPN      |      10%       | 16 labeled img + 16 unlabeled imgs  | 31.39 | [link](https://drive.google.com/file/d/1U9tnJGvzRFSOnOfIHOnelFmlvEfyayha/view?usp=sharing) |
 
 ## FAQ
 
@@ -132,7 +141,7 @@ Coming soon
 |   Experiment GPUs    |         Batch size per node         |             Batch size              |  AP   |
 | :------------------: | :---------------------------------: | :---------------------------------: | :---: |
 | 8 GPUs/node; 4 nodes |  8 labeled imgs + 8 unlabeled imgs  | 32 labeled img + 32 unlabeled imgs  | 20.75 |
-| 8 GPUs/node; 1 node  | 16 labeled imgs + 16 unlabeled imgs | 16 labeled imgs + 16 unlabeled imgs | 19.9  |
+| 8 GPUs/node; 1 node  | 16 labeled imgs + 16 unlabeled imgs | 16 labeled imgs + 16 unlabeled imgs | 20.16 |
 
 ## Citing Unbiased Teacher
 
