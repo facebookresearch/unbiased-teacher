@@ -16,7 +16,8 @@ from detectron2.modeling.roi_heads.fast_rcnn import FastRCNNOutputLayers
 from ubteacher.modeling.roi_heads.fast_rcnn import FastRCNNFocaltLossOutputLayers
 
 import numpy as np
-from detectron2.modeling.poolers import ROIPooler
+#from detectron2.modeling.poolers import ROIPooler
+from .pooler import ROIPooler
 
 
 @ROI_HEADS_REGISTRY.register()
@@ -102,6 +103,21 @@ class StandardROIHeadsPseudoLab(StandardROIHeads):
             )
 
             return pred_instances, predictions
+
+    def forward_without_sampling(self, features, proposals):
+        features = [features[f] for f in self.box_in_features]
+        box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+        box_features = self.box_head(box_features)
+        predictions = self.box_predictor(box_features)
+        return predictions
+
+    def predict_with_assignments(self, features, proposals, level_assignments, i):
+        features = [features[f] for f in self.box_in_features]
+        level2features, level2inds = self.box_pooler.pool_with_assignments(features, [x.proposal_boxes for x in proposals], level_assignments)
+
+        current_prediction = self.box_predictor(self.box_head(level2features[i]))
+        del level2features
+        return current_prediction
 
     def _forward_box(
         self,

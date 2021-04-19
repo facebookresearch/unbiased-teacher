@@ -1,9 +1,12 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import os
 import time
+import math
 import logging
 import torch
+from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
+from torch.cuda.amp import autocast
 from fvcore.nn.precise_bn import get_bn_modules
 import numpy as np
 from collections import OrderedDict
@@ -394,6 +397,14 @@ class UBTeacherTrainer(DefaultTrainer):
         label_data_q, label_data_k, unlabel_data_q, unlabel_data_k = data
         data_time = time.perf_counter() - start
 
+        # initialize or update teacher model
+        if self.iter == min(self.cfg.SEMISUPNET.BURN_UP_STEP, self.cfg.CONSISTENCY.START):  # first update copy the the whole model
+            self._update_teacher_model(keep_rate=0.00)
+
+        elif ((self.iter - min(self.cfg.SEMISUPNET.BURN_UP_STEP, self.cfg.CONSISTENCY.START)) % self.cfg.SEMISUPNET.TEACHER_UPDATE_ITER == 0) \
+                and self.iter > min(self.cfg.SEMISUPNET.BURN_UP_STEP, self.cfg.CONSISTENCY.START):
+            self._update_teacher_model(keep_rate=self.cfg.SEMISUPNET.EMA_KEEP_RATE)
+
         # burn-in stage (supervised training with labeled data)
         if self.iter < self.cfg.SEMISUPNET.BURN_UP_STEP:
 
@@ -408,7 +419,7 @@ class UBTeacherTrainer(DefaultTrainer):
                     loss_dict[key] = record_dict[key] * 1
             losses = sum(loss_dict.values())
 
-        else:
+        else: # pseudo-label branch
             if self.iter == self.cfg.SEMISUPNET.BURN_UP_STEP:
                 # update copy the the whole model
                 self._update_teacher_model(keep_rate=0.00)
@@ -462,19 +473,57 @@ class UBTeacherTrainer(DefaultTrainer):
             all_label_data = label_data_q + label_data_k
             all_unlabel_data = unlabel_data_q
 
-            record_all_label_data, _, _, _ = self.model(
-                all_label_data, branch="supervised"
-            )
-            record_dict.update(record_all_label_data)
-            record_all_unlabel_data, _, _, _ = self.model(
-                all_unlabel_data, branch="supervised"
-            )
+            # supervised branch
+            with autocast():
+                if self.cfg.SEMISUPNET.SUPERVISED_CROSS_LEVEL: # cross-level or not
+                    record_all_label_data, _, _, _ = self.model(all_label_data, branch="supervised_cross_level")
+
+                else:
+                    # input number of samples: 2x batch_size (contains label_data_q + label_data_k)
+                    record_all_label_data, _, _, _ = self.model(all_label_data, branch='supervised')
+                record_dict.update(record_all_label_data)
+
+                # pseudo-label branch
+                if self.cfg.SEMISUPNET.PSEUDO_LABEL_CROSS_LEVEL: # cross-level or not
+                    record_all_unlabel_data, _, _, _ = self.model(all_unlabel_data, branch="supervised_cross_level")
+                else:
+                    # input number of samples: 2x batch_size (contains label_data_q + label_data_k)
+                    record_all_unlabel_data, _, _, _ = self.model(all_unlabel_data, branch='supervised')
+
             new_record_all_unlabel_data = {}
             for key in record_all_unlabel_data.keys():
                 new_record_all_unlabel_data[key + "_pseudo"] = record_all_unlabel_data[
                     key
                 ]
             record_dict.update(new_record_all_unlabel_data)
+        with autocast():
+            if self.cfg.CONSISTENCY.ROI_LEVEL and self.iter >= self.cfg.CONSISTENCY.START and self.iter <= self.cfg.CONSISTENCY.END:
+                # get proposals from teacher model
+                proposals = self.model_teacher(unlabel_data_k, branch='get_proposals')
+
+                # get soft target
+                teacher_predictions_cls, teacher_predictions_reg = self.model_teacher(unlabel_data_k,
+                                                                                                        branch='roi_consistency_all_levels_heuristic',
+                                                                                                        proposals=proposals)
+                # Train student with all levels of features
+                student_predictions_cls, student_predictions_reg = self.model(unlabel_data_q, branch='roi_consistency_all_levels',
+                                                                              proposals=proposals)
+
+                cls_loss, reg_loss, num_proposals, num_proposals_reg = self.postprocessing(student_predictions_cls,
+                                                                                           student_predictions_reg,
+                                                                                           teacher_predictions_cls,
+                                                                                           teacher_predictions_reg)
+
+                record_dict['num_proposals'] = num_proposals
+                consistency_dict = dict(loss_cls_consistency=cls_loss, loss_reg_consistency=reg_loss)
+                record_dict.update(consistency_dict)
+
+                if self.cfg.WEIGHT_SCHEDULE.REWEIGHT:
+                    w = self._weight_schedule()
+                    record_dict['loss_cls_consistency'] = w * record_dict['loss_cls_consistency']
+                    record_dict['loss_cls_pseudo'] = (1 - w) * record_dict['loss_cls_pseudo']
+                    record_dict['loss_rpn_cls_pseudo'] = (1 - w) * record_dict['loss_rpn_cls_pseudo']
+                    record_dict['consistency_reweight'] = w
 
             # weight losses
             loss_dict = {}
@@ -490,15 +539,157 @@ class UBTeacherTrainer(DefaultTrainer):
                     else:  # supervised loss
                         loss_dict[key] = record_dict[key] * 1
 
-            losses = sum(loss_dict.values())
+                losses = sum(loss_dict.values())
 
-        metrics_dict = record_dict
-        metrics_dict["data_time"] = data_time
-        self._write_metrics(metrics_dict)
+            metrics_dict = record_dict
+            metrics_dict["data_time"] = data_time
+            self._write_metrics(metrics_dict)
 
         self.optimizer.zero_grad()
-        losses.backward()
-        self.optimizer.step()
+        # with AMP
+        self._trainer.grad_scaler.scale(losses).backward()
+        self._trainer.grad_scaler.step(self.optimizer)
+        self._trainer.grad_scaler.update()
+        #losses.backward()
+        #self.optimizer.step()
+
+
+    def compute_cls_loss(self, student_scores, teacher_scores):
+        if self.cfg.CONSISTENCY.CLS == 'MSE':
+            criterion = torch.nn.MSELoss(reduction='none')
+        elif self.cfg.CONSISTENCY.CLS == 'KL':
+            criterion = torch.nn.KLDivLoss(reduction='none')
+        else:
+            pass
+        if self.cfg.CONSISTENCY.CLS == 'KL':
+            loss = criterion(student_scores.log(), teacher_scores.detach())
+        else:
+            loss = criterion(student_scores, teacher_scores.detach())
+        return loss
+
+    def compute_reg_loss(self, student_offsets, teacher_offsets):
+        if self.cfg.CONSISTENCY.REG == 'MSE':
+            criterion = torch.nn.MSELoss(reduction='none')
+        elif self.cfg.CONSISTENCY.REG == 'SmoothL1':
+            criterion = torch.nn.SmoothL1Loss(reduction='none')
+
+        loss = criterion(student_offsets, teacher_offsets.detach())
+
+        return loss
+
+    def _weight_schedule(self):
+        t1 = self.cfg.WEIGHT_SCHEDULE.T1
+        t2 = self.cfg.WEIGHT_SCHEDULE.T2
+        if self.iter <= t1:
+            w = self._cos_reweight(0, t1, self.cfg.WEIGHT_SCHEDULE.W1, 1)
+        elif self.iter > t1 and self.iter < t2:
+            w = self.cfg.WEIGHT_SCHEDULE.W1
+        elif self.iter >= t2:
+            w = self._cos_reweight(t2, self.cfg.CONSISTENCY.END, self.cfg.WEIGHT_SCHEDULE.W2, self.cfg.WEIGHT_SCHEDULE.W1)
+        return w
+
+    def _cos_reweight(self, start_iter, end_iter, eta_min, eta_max):
+        pi = 3.14
+        f_k = eta_min + 0.5 * (eta_max - eta_min) * (math.cos(((self.iter - start_iter) / (end_iter - start_iter)) * pi) + 1)
+        if self.iter <= end_iter:
+            weight = f_k
+        else:
+            weight = 1.0
+        return weight
+
+    def _cos_coefficient(self, start_iter, end_iter, total_proposals):
+        pi = 3.14
+        f_k = 0.5 * (math.cos(((self.iter - start_iter) / end_iter) * pi) + 1)
+        if self.iter <= self.cfg.CONSISTENCY.RAMP_END:
+            ramped_proposals = int(f_k * (total_proposals - self.cfg.CONSISTENCY.MIN_PROPOSAL)) + self.cfg.CONSISTENCY.MIN_PROPOSAL
+        else:
+            ramped_proposals = self.cfg.CONSISTENCY.MIN_PROPOSAL
+        ohem_proposals = int(self.cfg.CONSISTENCY.MIN_PROPOSAL)
+        num_proposals = max(ramped_proposals, ohem_proposals)
+        return num_proposals
+
+
+    def postprocessing(self, student_predictions_cls, student_predictions_reg, teacher_predictions_cls,
+                       teacher_predictions_reg):
+        student_scores = [F.softmax(s, dim=-1) + 1e-7 for s in student_predictions_cls]
+        teacher_predictions_cls = F.softmax(teacher_predictions_cls, dim=-1) + 1e-7
+
+        student_offsets = student_predictions_reg
+
+        if self.cfg.CONSISTENCY.PAD_TYPE == 'min_proposal':
+            num_proposals = self.cfg.CONSISTENCY.MIN_PROPOSAL
+        elif self.cfg.CONSISTENCY.PAD_TYPE == 'ramp-to-proposal':
+            num_proposals = self._cos_coefficient(self.cfg.CONSISTENCY.START, self.cfg.CONSISTENCY.RAMP_END,
+                                                  teacher_predictions_cls.shape[0])
+        else:
+            num_proposals = teacher_predictions_cls.shape[0]
+
+        cls_loss_all_levels = []
+        reg_loss_all_levels = []
+        num_proposals_list = []
+        num_proposals_reg_list = []
+
+        for c, r in zip(student_scores, student_offsets):
+            if self.cfg.CONSISTENCY.APPLY_CLS:
+                unreduced_cls_loss_per_level = self.compute_cls_loss(c, teacher_predictions_cls)
+
+                # hard example mining
+                cls_loss_per_level = torch.sum(unreduced_cls_loss_per_level, dim=-1)
+
+                sorted_losses, indices = torch.sort(cls_loss_per_level, descending=True)
+                actual_num_proposals = num_proposals
+                cls_loss = sorted_losses[:num_proposals]
+                num_proposals_list.append(actual_num_proposals)
+
+
+                cls_loss = torch.mean(cls_loss)
+                cls_loss_all_levels.append(cls_loss)
+
+            if self.cfg.CONSISTENCY.APPLY_REG:
+                if self.cfg.MODEL.ROI_BOX_HEAD.CLS_AGNOSTIC_BBOX_REG:  # class agnostic regressor
+                    max_scores, max_class = torch.max(teacher_predictions_cls, dim=-1)
+                    fg_mask = (max_class != 80)
+                    fg_proposal_rows = \
+                    torch.arange(teacher_predictions_cls.shape[0], device=teacher_predictions_cls.device)[fg_mask]
+
+                    fg_r = r[fg_proposal_rows, :]
+                    fg_teacher = teacher_predictions_reg[fg_proposal_rows, :]
+                else:  # class-specific regressor
+                    max_scores, max_class = torch.max(teacher_predictions_cls, dim=-1)
+                    fg_mask = (max_class != 80)
+                    fg_classes = max_class[fg_mask]
+                    fg_class_cols = 4 * fg_classes[:, None] + torch.arange(4, device=fg_classes.device)
+                    fg_proposal_rows = \
+                    torch.arange(teacher_predictions_cls.shape[0], device=teacher_predictions_cls.device)[fg_mask]
+
+                    fg_r = r[fg_proposal_rows[:, None], fg_class_cols]
+                    fg_teacher = teacher_predictions_reg[fg_proposal_rows[:, None], fg_class_cols]
+
+                if fg_r.shape[0] == 0:
+                    continue
+
+                reg_loss_per_level = self.compute_reg_loss(fg_r, fg_teacher)
+                reg_loss = torch.mean(reg_loss_per_level)
+                reg_loss_all_levels.append(reg_loss)
+                num_proposals_reg_list.append(fg_teacher.shape[0])
+
+        if len(cls_loss_all_levels) != 0:
+            cls_loss = torch.mean(torch.stack(cls_loss_all_levels))
+        else:
+            cls_loss = 0.0
+
+        if len(reg_loss_all_levels) != 0:
+            reg_loss = torch.mean(torch.stack(reg_loss_all_levels))
+        else:
+            reg_loss = 0.0
+
+        num_proposals = sum(num_proposals_list) / len(num_proposals_list)
+        if len(num_proposals_reg_list) == 0:
+            num_proposals_reg = 0
+        else:
+            num_proposals_reg = sum(num_proposals_reg_list) / len(num_proposals_reg_list)
+
+        return cls_loss, reg_loss, num_proposals, num_proposals_reg
 
     def _write_metrics(self, metrics_dict: dict):
         metrics_dict = {
