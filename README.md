@@ -143,19 +143,19 @@ For the following results, we use 16 labeled images + 16 unlabeled images on 8 G
 
 Faster-RCNN:
 
-|  Model  | Supervision |             Batch size             |  AP   |                                       Model Weights                                        |
-| :-----: | :---------: | :--------------------------------: | :---: | :----------------------------------------------------------------------------------------: |
-| R50-FPN |     1%      | 16 labeled img + 16 unlabeled imgs | 20.16 | [link](https://drive.google.com/file/d/1NQs5SrQ2-ODEVn_ZdPU_2xv9mxdY6MPq/view?usp=sharing) |
-| R50-FPN |     2%      | 16 labeled img + 16 unlabeled imgs | 24.16 | [link](https://drive.google.com/file/d/12q-LB4iDvgXGW50Q-bYOahpalUvO3SIa/view?usp=sharing) |
-| R50-FPN |     5%      | 16 labeled img + 16 unlabeled imgs | 27.84 | [link](https://drive.google.com/file/d/1IJQeRP9wHPU0J27YTea-y3lIW96bMAUu/view?usp=sharing) |
-| R50-FPN |     10%     | 16 labeled img + 16 unlabeled imgs | 31.39 | [link](https://drive.google.com/file/d/1U9tnJGvzRFSOnOfIHOnelFmlvEfyayha/view?usp=sharing) |
+|  Model  | Supervision |        Batch size         |  AP   |                                       Model Weights                                        |
+| :-----: | :---------: | :-----------------------: | :---: | :----------------------------------------------------------------------------------------: |
+| R50-FPN |     1%      | 16 labeled + 16 unlabeled | 20.16 | [link](https://drive.google.com/file/d/1NQs5SrQ2-ODEVn_ZdPU_2xv9mxdY6MPq/view?usp=sharing) |
+| R50-FPN |     2%      | 16 labeled + 16 unlabeled | 24.16 | [link](https://drive.google.com/file/d/12q-LB4iDvgXGW50Q-bYOahpalUvO3SIa/view?usp=sharing) |
+| R50-FPN |     5%      | 16 labeled + 16 unlabeled | 27.84 | [link](https://drive.google.com/file/d/1IJQeRP9wHPU0J27YTea-y3lIW96bMAUu/view?usp=sharing) |
+| R50-FPN |     10%     | 16 labeled + 16 unlabeled | 31.39 | [link](https://drive.google.com/file/d/1U9tnJGvzRFSOnOfIHOnelFmlvEfyayha/view?usp=sharing) |
 
 VOC:
 
-|  Model  | Labeled set |  Unlabeled set  |            Batch size            | AP50  |  AP   |                                        Model Weights                                         |
-| :-----: | :---------: | :-------------: | :------------------------------: | :---: | :---: | :------------------------------------------------------------------------------------------: |
-| R50-FPN |    VOC07    |      VOC12      | 8 labeled img + 8 unlabeled imgs | 80.51 | 54.48 | [link](https://drive.google.com/drive/folders/1Wo7wGZ2t2sLLJ-HmZ46YOeopPwDwHYPL?usp=sharing) |
-| R50-FPN |    VOC07    | VOC12+COCO20cls | 8 labeled img + 8 unlabeled imgs | 81.71 | 55.79 | [link](https://drive.google.com/drive/folders/1xSY6nTX2n3RzuTw7dOQ_022RRHffJEPP?usp=sharing) |
+|  Model  | Labeled set |  Unlabeled set  |       Batch size        | AP50  |  AP   |                                        Model Weights                                         |
+| :-----: | :---------: | :-------------: | :---------------------: | :---: | :---: | :------------------------------------------------------------------------------------------: |
+| R50-FPN |    VOC07    |      VOC12      | 8 labeled + 8 unlabeled | 80.51 | 54.48 | [link](https://drive.google.com/drive/folders/1Wo7wGZ2t2sLLJ-HmZ46YOeopPwDwHYPL?usp=sharing) |
+| R50-FPN |    VOC07    | VOC12+COCO20cls | 8 labeled + 8 unlabeled | 81.71 | 55.79 | [link](https://drive.google.com/drive/folders/1xSY6nTX2n3RzuTw7dOQ_022RRHffJEPP?usp=sharing) |
 
 ## FAQ
 
@@ -163,12 +163,12 @@ VOC:
 
 - A: We train the model with 32 labeled images + 32 unlabeled images per batch for the results presented in the paper, and using the lower batch size leads to lower accuracy. For example, in the 1% COCO-supervision setting, the model trained with 16 labeled images + 16 unlabeled images achieves 20.16 AP as shown in the following table.
 
-|   Experiment GPUs    |         Batch size per node         |             Batch size              |  AP   |
-| :------------------: | :---------------------------------: | :---------------------------------: | :---: |
-| 8 GPUs/node; 4 nodes |  8 labeled imgs + 8 unlabeled imgs  | 32 labeled img + 32 unlabeled imgs  | 20.75 |
-| 8 GPUs/node; 1 node  | 16 labeled imgs + 16 unlabeled imgs | 16 labeled imgs + 16 unlabeled imgs | 20.16 |
+|   Experiment GPUs    |    Batch size per node    |        Batch size         |  AP   |
+| :------------------: | :-----------------------: | :-----------------------: | :---: |
+| 8 GPUs/node; 4 nodes |  8 labeled + 8 unlabeled  | 32 labeled + 32 unlabeled | 20.75 |
+| 8 GPUs/node; 1 node  | 16 labeled + 16 unlabeled | 16 labeled + 16 unlabeled | 20.16 |
 
-2. Q: How to use customized dataset other than COCO and VOC?
+1. Q: How to use customized dataset other than COCO and VOC?
 
 - A: Check [issue #10](https://github.com/facebookresearch/unbiased-teacher/issues/10). [Vladimir Fomenko](https://github.com/vlfom) provides a great answer!
 
