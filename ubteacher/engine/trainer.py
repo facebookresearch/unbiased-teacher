@@ -13,11 +13,13 @@ from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.engine import DefaultTrainer, SimpleTrainer, TrainerBase
 from detectron2.engine.train_loop import AMPTrainer
 from detectron2.utils.events import EventStorage
-from detectron2.evaluation import COCOEvaluator, verify_results
+from detectron2.evaluation import COCOEvaluator, verify_results, PascalVOCDetectionEvaluator, DatasetEvaluators
 from detectron2.data.dataset_mapper import DatasetMapper
 from detectron2.engine import hooks
 from detectron2.structures.boxes import Boxes
 from detectron2.structures.instances import Instances
+from detectron2.utils.env import TORCH_VERSION
+from detectron2.data import MetadataCatalog
 
 from ubteacher.data.build import (
     build_detection_semisup_train_loader,
@@ -67,6 +69,32 @@ class BaselineTrainer(DefaultTrainer):
         self.cfg = cfg
 
         self.register_hooks(self.build_hooks())
+
+    def resume_or_load(self, resume=True):
+        """
+        If `resume==True` and `cfg.OUTPUT_DIR` contains the last checkpoint (defined by
+        a `last_checkpoint` file), resume from the file. Resuming means loading all
+        available states (eg. optimizer and scheduler) and update iteration counter
+        from the checkpoint. ``cfg.MODEL.WEIGHTS`` will not be used.
+        Otherwise, this is considered as an independent training. The method will load model
+        weights from the file `cfg.MODEL.WEIGHTS` (but will not load other states) and start
+        from iteration 0.
+        Args:
+            resume (bool): whether to do resume or not
+        """
+        checkpoint = self.checkpointer.resume_or_load(
+            self.cfg.MODEL.WEIGHTS, resume=resume
+        )
+        if resume and self.checkpointer.has_checkpoint():
+            self.start_iter = checkpoint.get("iteration", -1) + 1
+            # The checkpoint stores the training iteration that just finished, thus we start
+            # at the next iteration (or iter zero if there's no checkpoint).
+        if isinstance(self.model, DistributedDataParallel):
+            # broadcast loaded data/model from the first rank, because other
+            # machines may not have access to the checkpoint file
+            if TORCH_VERSION >= (1, 7):
+                self.model._sync_params_and_buffers()
+            self.start_iter = comm.all_gather(self.start_iter)[0]
 
     def train_loop(self, start_iter: int, max_iter: int):
         """
@@ -128,7 +156,24 @@ class BaselineTrainer(DefaultTrainer):
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         if output_folder is None:
             output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-        return COCOEvaluator(dataset_name, cfg, True, output_folder)
+        evaluator_list = []
+        evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
+
+        if evaluator_type == "coco":
+            evaluator_list.append(COCOEvaluator(
+                dataset_name, output_dir=output_folder))
+        elif evaluator_type == "pascal_voc":
+            return PascalVOCDetectionEvaluator(dataset_name)
+        if len(evaluator_list) == 0:
+            raise NotImplementedError(
+                "no Evaluator for the dataset {} with the type {}".format(
+                    dataset_name, evaluator_type
+                )
+            )
+        elif len(evaluator_list) == 1:
+            return evaluator_list[0]
+
+        return DatasetEvaluators(evaluator_list)
 
     @classmethod
     def build_train_loader(cls, cfg):
@@ -200,7 +245,8 @@ class BaselineTrainer(DefaultTrainer):
 
         if comm.is_main_process():
             if "data_time" in all_metrics_dict[0]:
-                data_time = np.max([x.pop("data_time") for x in all_metrics_dict])
+                data_time = np.max([x.pop("data_time")
+                                   for x in all_metrics_dict])
                 self.storage.put_scalar("data_time", data_time)
 
             metrics_dict = {
@@ -267,15 +313,54 @@ class UBTeacherTrainer(DefaultTrainer):
 
         self.register_hooks(self.build_hooks())
 
+    def resume_or_load(self, resume=True):
+        """
+        If `resume==True` and `cfg.OUTPUT_DIR` contains the last checkpoint (defined by
+        a `last_checkpoint` file), resume from the file. Resuming means loading all
+        available states (eg. optimizer and scheduler) and update iteration counter
+        from the checkpoint. ``cfg.MODEL.WEIGHTS`` will not be used.
+        Otherwise, this is considered as an independent training. The method will load model
+        weights from the file `cfg.MODEL.WEIGHTS` (but will not load other states) and start
+        from iteration 0.
+        Args:
+            resume (bool): whether to do resume or not
+        """
+        checkpoint = self.checkpointer.resume_or_load(
+            self.cfg.MODEL.WEIGHTS, resume=resume
+        )
+        if resume and self.checkpointer.has_checkpoint():
+            self.start_iter = checkpoint.get("iteration", -1) + 1
+            # The checkpoint stores the training iteration that just finished, thus we start
+            # at the next iteration (or iter zero if there's no checkpoint).
+        if isinstance(self.model, DistributedDataParallel):
+            # broadcast loaded data/model from the first rank, because other
+            # machines may not have access to the checkpoint file
+            if TORCH_VERSION >= (1, 7):
+                self.model._sync_params_and_buffers()
+            self.start_iter = comm.all_gather(self.start_iter)[0]
+
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         if output_folder is None:
             output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
+        evaluator_list = []
+        evaluator_type = MetadataCatalog.get(dataset_name).evaluator_type
 
-        if cfg.TEST.EVALUATOR == "COCOeval":
-            return COCOEvaluator(dataset_name, cfg, True, output_folder)
-        else:
-            raise ValueError("Unknown test evaluator.")
+        if evaluator_type == "coco":
+            evaluator_list.append(COCOEvaluator(
+                dataset_name, output_dir=output_folder))
+        elif evaluator_type == "pascal_voc":
+            return PascalVOCDetectionEvaluator(dataset_name)
+        if len(evaluator_list) == 0:
+            raise NotImplementedError(
+                "no Evaluator for the dataset {} with the type {}".format(
+                    dataset_name, evaluator_type
+                )
+            )
+        elif len(evaluator_list) == 1:
+            return evaluator_list[0]
+
+        return DatasetEvaluators(evaluator_list)
 
     @classmethod
     def build_train_loader(cls, cfg):
@@ -394,12 +479,17 @@ class UBTeacherTrainer(DefaultTrainer):
         label_data_q, label_data_k, unlabel_data_q, unlabel_data_k = data
         data_time = time.perf_counter() - start
 
+        # remove unlabeled data labels
+        unlabel_data_q = self.remove_label(unlabel_data_q)
+        unlabel_data_k = self.remove_label(unlabel_data_k)
+
         # burn-in stage (supervised training with labeled data)
         if self.iter < self.cfg.SEMISUPNET.BURN_UP_STEP:
 
             # input both strong and weak supervised data into model
             label_data_q.extend(label_data_k)
-            record_dict, _, _, _ = self.model(label_data_q, branch="supervised")
+            record_dict, _, _, _ = self.model(
+                label_data_q, branch="supervised")
 
             # weight losses
             loss_dict = {}
@@ -416,7 +506,8 @@ class UBTeacherTrainer(DefaultTrainer):
             elif (
                 self.iter - self.cfg.SEMISUPNET.BURN_UP_STEP
             ) % self.cfg.SEMISUPNET.TEACHER_UPDATE_ITER == 0:
-                self._update_teacher_model(keep_rate=self.cfg.SEMISUPNET.EMA_KEEP_RATE)
+                self._update_teacher_model(
+                    keep_rate=self.cfg.SEMISUPNET.EMA_KEEP_RATE)
 
             record_dict = {}
             #  generate the pseudo-label using teacher model
@@ -449,8 +540,6 @@ class UBTeacherTrainer(DefaultTrainer):
             joint_proposal_dict["proposals_pseudo_roih"] = pesudo_proposals_roih_unsup_k
 
             #  add pseudo-label to unlabeled data
-            unlabel_data_q = self.remove_label(unlabel_data_q)
-            unlabel_data_k = self.remove_label(unlabel_data_k)
 
             unlabel_data_q = self.add_label(
                 unlabel_data_q, joint_proposal_dict["proposals_pseudo_roih"]
@@ -485,7 +574,8 @@ class UBTeacherTrainer(DefaultTrainer):
                         loss_dict[key] = record_dict[key] * 0
                     elif key[-6:] == "pseudo":  # unsupervised loss
                         loss_dict[key] = (
-                            record_dict[key] * self.cfg.SEMISUPNET.UNSUP_LOSS_WEIGHT
+                            record_dict[key] *
+                            self.cfg.SEMISUPNET.UNSUP_LOSS_WEIGHT
                         )
                     else:  # supervised loss
                         loss_dict[key] = record_dict[key] * 1
@@ -516,7 +606,8 @@ class UBTeacherTrainer(DefaultTrainer):
             if "data_time" in all_metrics_dict[0]:
                 # data_time among workers can have high variance. The actual latency
                 # caused by data_time is the maximum among workers.
-                data_time = np.max([x.pop("data_time") for x in all_metrics_dict])
+                data_time = np.max([x.pop("data_time")
+                                   for x in all_metrics_dict])
                 self.storage.put_scalar("data_time", data_time)
 
             # average the rest metrics
@@ -550,7 +641,8 @@ class UBTeacherTrainer(DefaultTrainer):
         for key, value in self.model_teacher.state_dict().items():
             if key in student_model_dict.keys():
                 new_teacher_dict[key] = (
-                    student_model_dict[key] * (1 - keep_rate) + value * keep_rate
+                    student_model_dict[key] *
+                    (1 - keep_rate) + value * keep_rate
                 )
             else:
                 raise Exception("{} is not found in student model".format(key))
@@ -612,40 +704,14 @@ class UBTeacherTrainer(DefaultTrainer):
             return _last_eval_results_student
 
         def test_and_save_results_teacher():
-            self._last_eval_results_teacher = self.test(self.cfg, self.model_teacher)
+            self._last_eval_results_teacher = self.test(
+                self.cfg, self.model_teacher)
             return self._last_eval_results_teacher
 
-        ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD, test_and_save_results_student))
-        ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD, test_and_save_results_teacher))
-
-        if cfg.TEST.VAL_LOSS:  # default is True # save training time if not applied
-            ret.append(
-                LossEvalHook(
-                    cfg.TEST.EVAL_PERIOD,
-                    self.model,
-                    build_detection_test_loader(
-                        self.cfg,
-                        self.cfg.DATASETS.TEST[0],
-                        DatasetMapper(self.cfg, True),
-                    ),
-                    model_output="loss_proposal",
-                    model_name="student",
-                )
-            )
-
-            ret.append(
-                LossEvalHook(
-                    cfg.TEST.EVAL_PERIOD,
-                    self.model_teacher,
-                    build_detection_test_loader(
-                        self.cfg,
-                        self.cfg.DATASETS.TEST[0],
-                        DatasetMapper(self.cfg, True),
-                    ),
-                    model_output="loss_proposal",
-                    model_name="",
-                )
-            )
+        ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD,
+                   test_and_save_results_student))
+        ret.append(hooks.EvalHook(cfg.TEST.EVAL_PERIOD,
+                   test_and_save_results_teacher))
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
