@@ -170,11 +170,15 @@ VOC:
 
 2. Q: How to use customized dataset other than COCO and VOC?
 
-- A: Check existing issue(https://github.com/facebookresearch/unbiased-teacher/issues/10). [Vladimir Fomenko](https://github.com/vlfom) provides a great answer!
+- A: Check [issue #10](https://github.com/facebookresearch/unbiased-teacher/issues/10). [Vladimir Fomenko](https://github.com/vlfom) provides a great answer!
 
 3. Q: What is `COCO_supervision.txt`? Could I remove it if I need to use my own dataset?
 
 - A: `COCO_supervision.txt` stores data split of the results we presented in the paper. We did this to make sure the results are reproducible. Also, we found out that the variance across runs is less than 1 mAP, so using other random seed should lead to similar results.
+
+4. Why VOC results in github repo look better than VOC results presented in the paper?
+
+- A: We use COCOevaluator to evalute VOC07-test on paper, while we notice that VOCevaluator has different way to compute AP and results in higher results.
 
 ## Citing Unbiased Teacher
 
