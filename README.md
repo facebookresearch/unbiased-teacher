@@ -139,7 +139,7 @@ python train_net.py \
 
 ## Model Weights
 
-For the following results, we use 16 labeled images + 16 unlabeled images on 8 GPUs (single node).
+For the following COCO-supervision results, we use 16 labeled images + 16 unlabeled images on 8 GPUs (single node).
 
 Faster-RCNN:
 
@@ -149,6 +149,8 @@ Faster-RCNN:
 | R50-FPN |     2%      | 16 labeled + 16 unlabeled | 24.16 | [link](https://drive.google.com/file/d/12q-LB4iDvgXGW50Q-bYOahpalUvO3SIa/view?usp=sharing) |
 | R50-FPN |     5%      | 16 labeled + 16 unlabeled | 27.84 | [link](https://drive.google.com/file/d/1IJQeRP9wHPU0J27YTea-y3lIW96bMAUu/view?usp=sharing) |
 | R50-FPN |     10%     | 16 labeled + 16 unlabeled | 31.39 | [link](https://drive.google.com/file/d/1U9tnJGvzRFSOnOfIHOnelFmlvEfyayha/view?usp=sharing) |
+
+For the following VOC results, we use 8 labeled images + 8 unlabeled images on 4 GPUs (single node).
 
 VOC:
 
