@@ -48,7 +48,9 @@ def divide_label_unlabel(
     unlabel_dicts = []
     labeled_idx = set(labeled_idx)
 
-    for i in range(len(dataset_dicts)):
+    img_ids = list(map(lambda x : x['image_id'] , dataset_dicts))
+    dataset_dicts = {image['image_id'] : image for image in dataset_dicts}
+    for i in img_ids:
         if i in labeled_idx:
             label_dicts.append(dataset_dicts[i])
         else:
